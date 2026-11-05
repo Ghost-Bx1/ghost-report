@@ -71,11 +71,18 @@ python ghost-report.py --input results/ --output report.md --format markdown
 # Generate demo report with sample data
 python ghost-report.py --demo --output demo-report.html
 
+# Delta report - mark NEW vs RECURRING findings vs a previous run
+python ghost-report.py --input scan.json --diff prev-report.json --output delta.html
+
+# Deduplicate findings (merge identical title+category across sources)
+python ghost-report.py --input *.json --dedup --output report.html
+
 # Full options
 python ghost-report.py --input cloud.json fuzz.json \
     --title "Red Team 2026" \
     --author "Gh0st-Bx1" \
     --target example.com \
+    --dedup \
     --output report.html
 ```
 
@@ -101,6 +108,8 @@ python ghost-report.py --input recon.json cloud.json fuzz.json --output report.h
 | `--author`        | Author name (default: Gh0st-Bx1)                    |
 | `--target`        | Target name or domain                                |
 | `--demo`          | Generate demo report with sample findings            |
+| `--diff FILE`     | Delta mode - compare against previous JSON report    |
+| `--dedup`         | Deduplicate findings by title+category hash          |
 
 ## Ghost Toolkit
 

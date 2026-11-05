@@ -18,7 +18,9 @@ Autor: By Gh0st-Bx1 | github.com/Ghost-Bx1
 
 import argparse
 import glob
+import hashlib
 import json
+import math
 import os
 import sys
 from datetime import datetime
@@ -165,6 +167,43 @@ REMEDIATION = {
 }
 
 
+# ─── CVSS v3.1 Calculator ─────────────────────────────────────────────────────
+
+def cvss_score(vector: str) -> float:
+    """Calcula CVSS v3.1 a partir de vector string (CVSS:3.1/AV:N/AC:L/...)."""
+    _AV  = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}
+    _AC  = {"L": 0.77, "H": 0.44}
+    _PRU = {"N": 0.85, "L": 0.62, "H": 0.27}
+    _PRC = {"N": 0.85, "L": 0.68, "H": 0.50}
+    _UI  = {"N": 0.85, "R": 0.62}
+    _CIA = {"N": 0.0,  "L": 0.22, "H": 0.56}
+    try:
+        parts = {}
+        for seg in vector.split("/"):
+            if ":" in seg:
+                k, v = seg.split(":", 1)
+                parts[k] = v
+        scope = parts.get("S", "U")
+        av  = _AV.get(parts.get("AV", "N"), 0.85)
+        ac  = _AC.get(parts.get("AC", "L"), 0.77)
+        pr  = (_PRC if scope == "C" else _PRU).get(parts.get("PR", "N"), 0.85)
+        ui  = _UI.get(parts.get("UI", "N"), 0.85)
+        c   = _CIA.get(parts.get("C", "N"), 0.0)
+        i   = _CIA.get(parts.get("I", "N"), 0.0)
+        a   = _CIA.get(parts.get("A", "N"), 0.0)
+        iss = 1 - (1 - c) * (1 - i) * (1 - a)
+        impact = (7.52 * (iss - 0.029) - 3.25 * ((iss - 0.02) ** 15)
+                  if scope == "C" else 6.42 * iss)
+        exploit = 8.22 * av * ac * pr * ui
+        if impact <= 0:
+            return 0.0
+        raw = (min(1.08 * (impact + exploit), 10.0)
+               if scope == "C" else min(impact + exploit, 10.0))
+        return math.ceil(raw * 10) / 10
+    except Exception:
+        return 0.0
+
+
 def normalize_findings(datasets: list) -> list:
     """Normaliza findings de diferentes ghost-* tools para formato unificado."""
     normalized = []
@@ -198,7 +237,11 @@ def normalize_findings(datasets: list) -> list:
             cvss = item.get("cvss", item.get("score", None))
 
             if cvss is None:
-                cvss = [0, 3.9, 5.9, 7.9, 9.9][min(severity, 4)]
+                cvss_vec = item.get("cvss_vector", item.get("vector", ""))
+                if cvss_vec and ("AV:" in cvss_vec or "CVSS:" in cvss_vec):
+                    cvss = cvss_score(cvss_vec)
+                if not cvss:
+                    cvss = [0, 3.9, 5.9, 7.9, 9.9][min(severity, 4)]
 
             remediation = item.get("remediation", REMEDIATION.get(cat.lower(),
                           REMEDIATION["default"]))
@@ -219,6 +262,76 @@ def normalize_findings(datasets: list) -> list:
 
     normalized.sort(key=lambda x: x["severity"], reverse=True)
     return normalized
+
+
+# ─── Deduplicacao e Diff ──────────────────────────────────────────────────────
+
+def dedup_findings(findings: list) -> list:
+    """Remove findings duplicados por hash de titulo+categoria."""
+    seen = set()
+    result = []
+    for f in findings:
+        key = f"{f['title'].strip().lower()}::{f['category'].strip().lower()}"
+        h = hashlib.md5(key.encode()).hexdigest()[:12]
+        if h not in seen:
+            seen.add(h)
+            result.append(f)
+    return result
+
+
+def _finding_hash(f: dict) -> str:
+    key = f"{f['title'].strip().lower()}::{f['category'].strip().lower()}"
+    return hashlib.md5(key.encode()).hexdigest()[:12]
+
+
+def apply_diff(findings: list, prev_path: str) -> list:
+    """Marca findings como NEW ou RECURRING comparando com relatorio anterior."""
+    prev_hashes = set()
+    try:
+        with open(prev_path, encoding="utf-8") as fh:
+            prev = json.load(fh)
+        for pf in prev.get("findings", []):
+            if isinstance(pf, dict):
+                key = f"{str(pf.get('title','')).strip().lower()}::{str(pf.get('category','')).strip().lower()}"
+                prev_hashes.add(hashlib.md5(key.encode()).hexdigest()[:12])
+    except Exception as e:
+        print(f"  {C['Y']}[AVISO]{C['X']} diff nao carregado: {e}")
+    for f in findings:
+        f["diff_status"] = "recurring" if _finding_hash(f) in prev_hashes else "new"
+    return findings
+
+
+def auto_executive_summary(findings: list, target: str, risk_score: float,
+                            risk_label: str) -> str:
+    """Gera paragrafo de executive summary automaticamente."""
+    counts = {4: 0, 3: 0, 2: 0, 1: 0, 0: 0}
+    categories: dict = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+        categories[f["category"]] = categories.get(f["category"], 0) + 1
+    total = len(findings)
+    if total == 0:
+        return "Nenhum finding identificado nesta avaliacao."
+    parts = []
+    if counts[4]: parts.append(f"{counts[4]} critico(s)")
+    if counts[3]: parts.append(f"{counts[3]} alto(s)")
+    if counts[2]: parts.append(f"{counts[2]} medio(s)")
+    if counts[1]: parts.append(f"{counts[1]} baixo(s)")
+    if counts[0]: parts.append(f"{counts[0]} informativo(s)")
+    sev_str = ", ".join(parts)
+    top_cats = [c for c, _ in sorted(categories.items(), key=lambda x: x[1], reverse=True)[:3]]
+    t = target or "o alvo avaliado"
+    summary = (f"Esta avaliacao de seguranca em {t} identificou {total} finding(s): "
+               f"{sev_str}. O risco global e classificado como {risk_label} "
+               f"(CVSS medio: {risk_score:.1f}). ")
+    if top_cats:
+        summary += f"As categorias de maior incidencia foram: {', '.join(top_cats)}. "
+    if counts[4] > 0:
+        summary += ("Vulnerabilidades criticas requerem atencao imediata e "
+                    "remediacoes prioritarias antes de qualquer nova exposicao. ")
+    elif counts[3] > 0:
+        summary += "Vulnerabilidades de alto risco devem ser remediadas em curto prazo. "
+    return summary
 
 
 def make_demo_data() -> list:
@@ -292,6 +405,60 @@ def _html_escape(s: str) -> str:
              .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+# Risk level colors: Extreme, High, Medium, Low
+_RM_COLORS = {
+    "E": "#ff3d3d", "H": "#ffb300", "M": "#00bcd4", "L": "#2e7d32",
+}
+_RM_GRID = [
+    # col: Insignif  Minor    Moderate  Major     Catastrophic
+    ["M",  "M",      "H",     "H",      "E"],   # row: Almost Certain
+    ["L",  "M",      "H",     "H",      "E"],   # Likely
+    ["L",  "L",      "M",     "H",      "H"],   # Possible
+    ["L",  "L",      "L",     "M",      "H"],   # Unlikely
+    ["L",  "L",      "L",     "L",      "M"],   # Rare
+]
+_RM_ROWS = ["Almost Certain", "Likely", "Possible", "Unlikely", "Rare"]
+_RM_COLS = ["Insignificant", "Minor", "Moderate", "Major", "Catastrophic"]
+_SEV_TO_CELL = {4: (0, 4), 3: (1, 3), 2: (2, 2), 1: (3, 1), 0: (4, 0)}
+
+
+def _risk_matrix_html(findings: list) -> str:
+    """Gera tabela HTML 5x5 risk matrix com counts por severidade."""
+    cell_counts: dict = {}
+    for f in findings:
+        rc = _SEV_TO_CELL.get(f["severity"], (4, 0))
+        cell_counts[rc] = cell_counts.get(rc, 0) + 1
+
+    rows_html = ""
+    for ri, row_label in enumerate(_RM_ROWS):
+        cells = ""
+        for ci, col_label in enumerate(_RM_COLS):
+            lvl = _RM_GRID[ri][ci]
+            bg = _RM_COLORS[lvl]
+            cnt = cell_counts.get((ri, ci), 0)
+            cnt_html = (f'<span style="font-size:18px;font-weight:700;color:#fff">{cnt}</span>'
+                        if cnt else "")
+            cells += (f'<td style="background:{bg}22;border:1px solid {bg}44;'
+                      f'color:{bg};text-align:center;padding:10px 6px;min-width:80px">'
+                      f'{cnt_html}</td>')
+        rows_html += f'<tr><td style="padding:6px 10px;color:var(--fg-dim);font-size:11px;white-space:nowrap">{row_label}</td>{cells}</tr>'
+
+    header_cells = "".join(
+        f'<th style="padding:6px 8px;font-size:10px;color:var(--fg-dim);font-weight:600;text-transform:uppercase;letter-spacing:.05em">{c}</th>'
+        for c in _RM_COLS)
+    legend = " ".join(
+        f'<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px">'
+        f'<span style="width:10px;height:10px;border-radius:2px;background:{_RM_COLORS[k]};display:inline-block"></span>'
+        f'<span style="color:var(--fg-dim)">{v}</span></span>'
+        for k, v in [("E", "Extreme"), ("H", "High"), ("M", "Medium"), ("L", "Low")])
+    return (f'<div style="overflow-x:auto;margin-top:8px">'
+            f'<div style="font-size:10px;color:var(--fg-dim);margin-bottom:6px;letter-spacing:.05em">LIKELIHOOD / IMPACT</div>'
+            f'<table style="border-collapse:collapse;width:100%">'
+            f'<tr><th></th>{header_cells}</tr>{rows_html}</table>'
+            f'<div style="margin-top:8px;display:flex;gap:12px;flex-wrap:wrap">{legend}</div>'
+            f'</div>')
+
+
 def generate_html(findings: list, title: str, author: str, target: str) -> str:
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     counts = {4: 0, 3: 0, 2: 0, 1: 0, 0: 0}
@@ -303,18 +470,27 @@ def generate_html(findings: list, title: str, author: str, target: str) -> str:
     risk_label = "CRITICO" if risk_score >= 7 else "ALTO" if risk_score >= 4 else "MEDIO" if risk_score >= 2 else "BAIXO"
     risk_color = "#ff3d3d" if risk_score >= 7 else "#ffb300" if risk_score >= 4 else "#00bcd4" if risk_score >= 2 else "#69f0ae"
 
+    exec_summary = auto_executive_summary(findings, target, risk_score, risk_label)
+    risk_matrix = _risk_matrix_html(findings)
+
     findings_html = ""
     for i, f in enumerate(findings, 1):
         sc = SEV_COLOR.get(f["severity"], "#607d8b")
         sb = SEV_BG.get(f["severity"], "rgba(96,125,139,.1)")
-        url_html = f'<a href="{_html_escape(f["url"])}" style="color:#00bcd4;word-break:break-all">{_html_escape(f["url"])}</a>' if f["url"] else "-"
+        url_html = (f'<a href="{_html_escape(f["url"])}" style="color:#00bcd4;word-break:break-all">'
+                    f'{_html_escape(f["url"])}</a>') if f["url"] else "-"
+        diff_badge = ""
+        if f.get("diff_status") == "new":
+            diff_badge = '<span style="background:#00e67622;color:#00e676;border:1px solid #00e67644;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;margin-left:6px">NEW</span>'
+        elif f.get("diff_status") == "recurring":
+            diff_badge = '<span style="background:#ffb30022;color:#ffb300;border:1px solid #ffb30044;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;margin-left:6px">RECORRENTE</span>'
         findings_html += f"""
         <div class="finding" style="border-left:3px solid {sc};background:{sb}">
           <div class="finding-header">
             <span class="finding-num">#{i:03d}</span>
             <span class="finding-title">{_html_escape(f['title'])}</span>
             <span class="badge" style="background:{sc}22;color:{sc};border:1px solid {sc}44">{f['severity_label']}</span>
-            <span class="cvss">CVSS {f['cvss']}</span>
+            <span class="cvss">CVSS {f['cvss']}</span>{diff_badge}
           </div>
           <div class="finding-body">
             <div class="finding-meta">
@@ -410,12 +586,21 @@ a {{ color: var(--cyan); }}
     </div>
   </div>
 
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:16px 20px;margin-bottom:20px;font-size:13px;line-height:1.7;color:var(--fg-dim)">
+    {_html_escape(exec_summary)}
+  </div>
+
   <div class="summary">
     <div class="stat-card"><div class="stat-num" style="color:{SEV_COLOR[4]}">{counts[4]}</div><div class="stat-label">Critico</div></div>
     <div class="stat-card"><div class="stat-num" style="color:{SEV_COLOR[3]}">{counts[3]}</div><div class="stat-label">Alto</div></div>
     <div class="stat-card"><div class="stat-num" style="color:{SEV_COLOR[2]}">{counts[2]}</div><div class="stat-label">Medio</div></div>
     <div class="stat-card"><div class="stat-num" style="color:{SEV_COLOR[1]}">{counts[1]}</div><div class="stat-label">Baixo</div></div>
     <div class="stat-card"><div class="stat-num" style="color:var(--fg-dim)">{total}</div><div class="stat-label">Total</div></div>
+  </div>
+
+  <div class="section-title">Risk Matrix</div>
+  <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:16px 20px;margin-bottom:28px">
+    {risk_matrix}
   </div>
 
   <div class="section-title">Findings Tecnicos ({total})</div>
@@ -485,6 +670,10 @@ def main():
                     help="Alvo principal (para cabecalho)")
     ap.add_argument("--demo", action="store_true",
                     help="Gerar relatorio com dados de demo")
+    ap.add_argument("--diff", metavar="PREV_JSON",
+                    help="Relatorio JSON anterior para modo delta (marca NEW / RECORRENTE)")
+    ap.add_argument("--dedup", action="store_true",
+                    help="Remover findings duplicados por titulo+categoria")
     args = ap.parse_args()
 
     if not args.input and not args.demo:
@@ -504,6 +693,17 @@ def main():
     print(f"\n  {C['G']}[...]{C['X']} Normalizando findings...")
     findings = normalize_findings(datasets)
     print(f"  {C['G']}[OK]{C['X']}  {len(findings)} finding(s) normalizados")
+
+    if args.dedup:
+        before = len(findings)
+        findings = dedup_findings(findings)
+        print(f"  {C['G']}[OK]{C['X']}  Dedup: {before} -> {len(findings)} findings")
+
+    if args.diff:
+        findings = apply_diff(findings, args.diff)
+        new_cnt = sum(1 for f in findings if f.get("diff_status") == "new")
+        rec_cnt = sum(1 for f in findings if f.get("diff_status") == "recurring")
+        print(f"  {C['G']}[OK]{C['X']}  Delta: {new_cnt} novos, {rec_cnt} recorrentes")
 
     target = args.target or (datasets[0].get("target", "") if datasets else "")
 
