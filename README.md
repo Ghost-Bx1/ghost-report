@@ -104,6 +104,26 @@ python ghost-report.py --input recon.json cloud.json fuzz.json --output report.h
 
 ---
 
+## Roadmap
+
+Improvements planned for professional pentest reporting:
+
+| Priority | Feature | Description |
+|----------|---------|-------------|
+| High | CVSS v3.1 calculator | Interactive AV/AC/PR/UI/S/C/I/A score computation with base, temporal and environmental vectors |
+| High | Delta report mode | Compare two JSON scans: classify findings as new/fixed/unchanged (`--diff previous.json`) |
+| High | Risk matrix visualization | 5x5 impact vs likelihood grid in HTML output; click cell to list findings at that risk level |
+| High | Executive summary auto-generation | Auto-write prose summary from finding counts, severity distribution and top categories |
+| High | Findings deduplication | Hash title+category, merge duplicate findings across multiple input files |
+| Medium | PDF export (no external deps) | HTML print CSS optimized for A4/Letter with page breaks per finding section |
+| Medium | Per-client templates | `--template dark\|light\|corp` with configurable logo URL and color scheme |
+| Medium | JIRA/GitHub Issues export | `--export jira` posts each finding as a ticket via REST API (requires API token) |
+| Medium | Finding annotation | Add manual notes, screenshots path and proof-of-concept URL per finding in JSON |
+| Medium | Remediation checklist | Per-category remediation steps exported as a Markdown checklist for the client |
+| Low | Timeline visualization | Horizontal timeline of scan date + tool for the report header |
+| Low | SARIF output | `--output-format sarif` for integration with GitHub Advanced Security code scanning |
+| Low | Ghost-AD integration | Accept ghost-ad JSON output with AD-specific finding categories and remediation |
+
 ## Disclaimer
 
 For use in authorized environments only. Penetration testing, CTF competitions, and offensive security research with explicit permission from the environment owner. The author is not responsible for misuse.
