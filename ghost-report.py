@@ -25,7 +25,7 @@ import os
 import sys
 from datetime import datetime
 
-VERSAO = "1.0.0"
+VERSAO = "2.0.0"
 
 
 def _build_banner():
@@ -164,6 +164,23 @@ REMEDIATION = {
     "waf": "WAF detectado - pode requerer evasion para testes adicionais.",
     "ssl": "Atualizar configuracao TLS. Desabilitar SSLv3/TLS1.0/1.1. Usar cipher suites fortes.",
     "default": "Revisar e corrigir a configuracao identificada seguindo as melhores praticas de seguranca.",
+    "broken_auth": "Implementar MFA. Usar tokens JWT com expiracao curta. Proteger endpoints de autenticacao com rate limiting.",
+    "injection": "Usar prepared statements. Nunca interpolar input do usuario em comandos. Validar e sanitizar entradas.",
+    "rce": "Nunca executar comandos construidos a partir de input externo. Usar APIs nativas no lugar de shell_exec/system.",
+    "xxe": "Desabilitar processamento de entidades externas no parser XML. Usar JSON onde possivel.",
+    "deserialization": "Validar e assinar objetos serializados. Usar allowlist de classes. Nunca desserializar dados externos sem validacao.",
+    "idor": "Implementar autorizacao baseada em objetos (RBAC/ABAC). Verificar ownership em cada request.",
+    "path_traversal": "Usar basename() para extrair nomes de arquivo. Nunca concatenar input em paths de filesystem.",
+    "csrf": "Implementar CSRF tokens validos por sessao. Usar SameSite=Strict em cookies de sessao.",
+    "misconfig": "Seguir CIS Benchmarks para o componente afetado. Remover servicos, usuarios e configuracoes desnecessarias.",
+    "secrets": "Rotacionar credenciais expostas imediatamente. Usar secrets manager (Vault, AWS SSM, Azure Key Vault).",
+    "ad_cs": "Desabilitar CT_FLAG_ENROLLEE_SUPPLIES_SUBJECT em templates. Remover permissoes de enrollment de grupos nao-privilegiados.",
+    "kerberoast": "Usar senhas longas (>25 chars) em contas de servico. Migrar para gMSA. Habilitar AES-256.",
+    "dcsync": "Remover DS-Replication-Get-Changes-All de contas nao-DCs. Auditar via BloodHound regularmente.",
+    "laps": "Implantar LAPS (Microsoft LAPS ou Windows LAPS) em todos os workstations e servidores membros.",
+    "privilege_escalation": "Seguir principio do minimo privilegio. Auditar grupos privilegiados. Revisar sudoers/token privileges.",
+    "cloud_iam": "Aplicar principio do minimo privilegio. Remover wildcards de policies IAM. Revisar roles assumiveis.",
+    "exposed_service": "Restringir acesso por Security Group / firewall. Habilitar autenticacao. Monitorar com CloudWatch/SIEM.",
 }
 
 
@@ -649,6 +666,124 @@ def generate_markdown(findings: list, title: str, author: str, target: str) -> s
     return "\n".join(lines)
 
 
+# ─── SARIF Export ─────────────────────────────────────────────────────────────
+
+def export_sarif(findings: list, output_path: str):
+    """Exporta findings no formato SARIF 2.1.0 para integracao CI/CD."""
+    sev_map = {4: "error", 3: "error", 2: "warning", 1: "note", 0: "none"}
+    rules = {}
+    results = []
+
+    for f in findings:
+        rule_id = f.get("category", "unknown").replace(" ", "_").lower()
+        if rule_id not in rules:
+            rules[rule_id] = {
+                "id": rule_id,
+                "name": f.get("category", "Unknown"),
+                "shortDescription": {"text": f.get("title", rule_id)},
+                "fullDescription": {"text": f.get("description", "")},
+                "help": {"text": f.get("remediation", REMEDIATION.get("default", ""))},
+                "properties": {"tags": ["security"], "precision": "medium",
+                               "problem.severity": sev_map.get(f.get("severity", 0), "warning")},
+            }
+        results.append({
+            "ruleId": rule_id,
+            "level": sev_map.get(f.get("severity", 0), "warning"),
+            "message": {"text": f.get("description", f.get("title", ""))},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": f.get("url") or f.get("target", "unknown")},
+            }}],
+            "properties": {
+                "cvss": f.get("cvss", 0),
+                "severity_label": f.get("severity_label", ""),
+                "url": f.get("url", ""),
+            },
+        })
+
+    sarif = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "Ghost-Report",
+                    "version": VERSAO,
+                    "informationUri": "https://github.com/Ghost-Bx1",
+                    "rules": list(rules.values()),
+                }
+            },
+            "results": results,
+        }],
+    }
+
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump(sarif, fh, indent=2, ensure_ascii=False)
+    print(f"  {C['G']}[SARIF]{C['X']} Exportado: {output_path} ({len(results)} results)")
+
+
+# ─── JSON Findings Export ──────────────────────────────────────────────────────
+
+def export_json_findings(findings: list, output_path: str):
+    """Exporta findings normalizados em JSON limpo para integracao."""
+    out = []
+    for f in findings:
+        out.append({
+            "id": f.get("id", ""),
+            "title": f.get("title", ""),
+            "category": f.get("category", ""),
+            "severity": f.get("severity", 0),
+            "severity_label": f.get("severity_label", ""),
+            "cvss": f.get("cvss", 0),
+            "url": f.get("url", ""),
+            "description": f.get("description", ""),
+            "remediation": f.get("remediation", ""),
+            "diff_status": f.get("diff_status", ""),
+        })
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump({"generated_by": "ghost-report", "version": VERSAO,
+                   "count": len(out), "findings": out},
+                  fh, indent=2, ensure_ascii=False)
+    print(f"  {C['G']}[JSON]{C['X']}  Exportado: {output_path} ({len(out)} findings)")
+
+
+# ─── Issue Template Generator ─────────────────────────────────────────────────
+
+def generate_issue_template(finding: dict, fmt: str = "jira") -> str:
+    """Gera template de issue JIRA ou GitLab Markdown para um finding."""
+    sev = finding.get("severity_label", "Unknown")
+    title = finding.get("title", "Finding")
+    desc = finding.get("description", "")
+    url = finding.get("url", "N/A")
+    cvss = finding.get("cvss", "N/A")
+    rem = finding.get("remediation", REMEDIATION.get("default", ""))
+    cat = finding.get("category", "")
+
+    if fmt == "jira":
+        return (
+            f"h2. {title}\n\n"
+            f"*Severidade:* {sev}\n"
+            f"*CVSS Score:* {cvss}\n"
+            f"*Categoria:* {cat}\n"
+            f"*URL/Alvo:* {url}\n\n"
+            f"h3. Descricao\n{desc}\n\n"
+            f"h3. Remediacao\n{rem}\n\n"
+            f"----\n_Gerado por Ghost-Report v{VERSAO} | By Gh0st-Bx1_\n"
+        )
+    else:  # gitlab
+        return (
+            f"## {title}\n\n"
+            f"| Campo | Valor |\n"
+            f"|---|---|\n"
+            f"| Severidade | **{sev}** |\n"
+            f"| CVSS Score | {cvss} |\n"
+            f"| Categoria | {cat} |\n"
+            f"| URL/Alvo | `{url}` |\n\n"
+            f"### Descricao\n{desc}\n\n"
+            f"### Remediacao\n{rem}\n\n"
+            f"---\n*Gerado por Ghost-Report v{VERSAO} | By Gh0st-Bx1*\n"
+        )
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -674,6 +809,12 @@ def main():
                     help="Relatorio JSON anterior para modo delta (marca NEW / RECORRENTE)")
     ap.add_argument("--dedup", action="store_true",
                     help="Remover findings duplicados por titulo+categoria")
+    ap.add_argument("--sarif", metavar="FILE",
+                    help="Exportar tambem em formato SARIF 2.1.0 (CI/CD)")
+    ap.add_argument("--json-out", metavar="FILE",
+                    help="Exportar findings normalizados em JSON limpo")
+    ap.add_argument("--template", choices=["jira", "gitlab"],
+                    help="Gerar templates de issue JIRA ou GitLab para cada finding")
     args = ap.parse_args()
 
     if not args.input and not args.demo:
@@ -716,6 +857,23 @@ def main():
 
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(content)
+
+    if getattr(args, "sarif", None):
+        export_sarif(findings, args.sarif)
+
+    if getattr(args, "json_out", None):
+        export_json_findings(findings, args.json_out)
+
+    if getattr(args, "template", None):
+        tpl_fmt = args.template
+        tpl_lines = []
+        for fi in findings:
+            tpl_lines.append(generate_issue_template(fi, fmt=tpl_fmt))
+            tpl_lines.append("\n" + "=" * 60 + "\n")
+        tpl_file = f"ghost-report-issues-{tpl_fmt}.md"
+        with open(tpl_file, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(tpl_lines))
+        print(f"  {C['G']}[TPL]{C['X']}   Templates {tpl_fmt.upper()} gerados: {tpl_file}")
 
     counts = {4: 0, 3: 0, 2: 0, 1: 0, 0: 0}
     for fi in findings:
