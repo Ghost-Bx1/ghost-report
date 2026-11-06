@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Ghost-Report v1.0.0 - Unified Pentest Report Generator
 =======================================================
