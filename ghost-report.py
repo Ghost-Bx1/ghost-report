@@ -789,8 +789,41 @@ def generate_issue_template(finding: dict, fmt: str = "jira") -> str:
 def main():
     print(BANNER)
 
+    _REPORT_HELP = """\033[92mOpcoes principais:\033[0m
+  \033[1m--input / -i\033[0m       Arquivos JSON ou pasta com resultados das ferramentas Ghost
+  \033[1m--output / -o\033[0m      Arquivo de saida (padrao: ghost-report.html)
+  \033[1m--format\033[0m           Formato: html (padrao) ou markdown
+  \033[1m--title\033[0m            Titulo do relatorio (padrao: Pentest Report)
+  \033[1m--author\033[0m           Autor do relatorio (padrao: Gh0st-Bx1)
+  \033[1m--target\033[0m           Alvo do pentest (empresa/IP/dominio)
+  \033[1m--demo\033[0m             Gerar relatorio de demonstracao com dados falsos
+
+\033[92mOpcoes avancadas:\033[0m
+  \033[1m--diff\033[0m             Comparar com relatorio anterior (detectar novos/removidos)
+  \033[1m--dedup\033[0m            Deduplicar findings identicos automaticamente
+  \033[1m--sarif\033[0m            Exportar tambem em formato SARIF 2.1.0 (para CI/CD)
+  \033[1m--json-out\033[0m         Exportar findings normalizados em JSON limpo
+  \033[1m--template\033[0m         Gerar templates de issue: jira ou gitlab
+
+\033[92mCompatibilidade:\033[0m
+  Aceita saidas JSON de: ghost-recon, ghost-scan, ghost-fuzz, ghost-osint,
+  ghost-spray, ghost-ad, ghost-privesc, ghost-cloud, ghost-shell
+
+\033[92mExemplos:\033[0m
+  python ghost-report.py --input scan.json recon.json --output relatorio.html
+  python ghost-report.py --input ./resultados/ --title "Pentest ACME 2026"
+  python ghost-report.py --input scan.json --format markdown --output relatorio.md
+  python ghost-report.py --input scan.json --diff anterior.json --dedup
+  python ghost-report.py --input scan.json --sarif out.sarif --template jira
+  python ghost-report.py --demo
+
+\033[2mUse: python ghost-report.py --help  para ver todos os flags disponiveis\033[0m
+"""
     ap = argparse.ArgumentParser(
-        description="Ghost-Report - Unified Pentest Report Generator")
+        prog="ghost-report",
+        description="Ghost-Report v1.0.0 - Unified Pentest Report Generator  |  By Gh0st-Bx1",
+        epilog=_REPORT_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--input", "-i", nargs="+", metavar="FILE",
                     help="Arquivos JSON ou pasta de entrada")
     ap.add_argument("--output", "-o", metavar="FILE", default="ghost-report.html",
